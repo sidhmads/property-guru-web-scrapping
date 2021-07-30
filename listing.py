@@ -9,8 +9,10 @@ import xlwt
 from xlwt import Workbook
 from openpyxl import load_workbook
 from xlrd import open_workbook
+from xlutils.copy import copy as xl_copy
+import pandas as pd
 
-N = 2
+N = 52  # number of pagination
 INTERST_RATE = 1.5
 LISTING_URL = "https://www.propertyguru.com.sg/listing/{}"
 # URL = 'https://www.propertyguru.com.sg/property-for-sale?district_code%5B0%5D=D25&floor_level%5B0%5D=HIGH&maxprice=900000&property_type=N&property_type_code%5B0%5D=APT&property_type_code%5B1%5D=CLUS&property_type_code%5B2%5D=CONDO&property_type_code%5B3%5D=EXCON&property_type_code%5B4%5D=WALK&unselected=DISTRICT%7CD25&freetext=D25%20Admiralty%20/%20Woodlands&sort=size&order=desc'
@@ -22,17 +24,18 @@ GOOGLE_MAPS_URL = 'https://www.google.com/maps/search/{}'
 STYLE_ONE = xlwt.easyxf('pattern: pattern solid, fore_colour dark_blue;''font: colour white, bold True; align: horiz center;')
 STYLE_TWO = xlwt.easyxf('font: colour black, bold False; align: horiz center;')
 
+
 def get_driver(url, header=HEADER):
     options = Options()
     options.add_argument('--user-agent={}'.format(header))
     options.add_argument("--start-maximized")
-    # options.add_argument('--proxy-server=198.241.211.16')
-    driver = webdriver.Chrome(executable_path=r"C:/New_Software/chromedriver.exe", options=options)
+
+    driver = webdriver.Chrome(executable_path="./chromedriver", options=options)
     driver.implicitly_wait(3)
     time.sleep(3)
     isRunning = 0
     try:
-        driver.set_page_load_timeout(10)
+        driver.set_page_load_timeout(30)
         driver.get(url)
         isRunning = 1
     except:
@@ -41,8 +44,10 @@ def get_driver(url, header=HEADER):
         driver = None
     return isRunning, driver
 
+
 def format_float_value(val, index=1):
-    return round(float(val.split(' ')[index].replace(',','')),2)
+    return round(float(val.split(' ')[index].replace(',', '')), 2)
+
 
 def get_avg_rental(lst):
     counter = 0
@@ -51,7 +56,8 @@ def get_avg_rental(lst):
         if val:
             counter += 1
             total += format_float_value(val)
-    return round(total/counter,2)
+    return round(total / counter, 2)
+
 
 def get_details_from_listing_page(data):
     isRunning, driver = get_driver(data['Website'])
@@ -82,9 +88,9 @@ def get_details_from_listing_page(data):
 
     # get stations near it
     try:
-        data['Nearby Stations'] = list(map(lambda x: x.text, driver.find_element_by_class_name('price-overview-nearby-poi').find_elements_by_tag_name('div')[1:]))
+        data['Nearby Stations'] = ' / '.join(list(map(lambda x: x.text, driver.find_element_by_class_name('price-overview-nearby-poi').find_elements_by_tag_name('div')[1:])))
     except:
-        data['Nearby Stations'] = []
+        data['Nearby Stations'] = ' / '.join([])
 
     details_section = driver.find_element_by_class_name('listing-details-primary')
     details_list = ['Furnishing', 'TOP', 'Floor Level', 'Currently Tenanted', 'Maintenance Fee']
@@ -104,7 +110,7 @@ def get_details_from_listing_page(data):
         for key in details_list:
             data[key] = 'NA'
 
-    house_features = []    
+    house_features = []
     try:
         house_features = list(map(lambda x: x.text, driver.find_element_by_id('facilities').find_elements_by_class_name('expansible')[0].find_element_by_tag_name('ul').find_elements_by_tag_name('span')))
     except:
@@ -116,9 +122,9 @@ def get_details_from_listing_page(data):
     driver.execute_script('arguments[0].scrollIntoView(true);', home_finance)
     data['Price'] = format_float_value(home_finance.find_element_by_css_selector('input.form-control[name="propertyPrice"]').get_attribute('value'), 0)
     data['Loan Amount'] = format_float_value(home_finance.find_element_by_css_selector('input.form-control[name="loanAmount"]').get_attribute('value'), 0)
-    data['Upfront Cost'] = round(data['Price'] - data['Loan Amount'],2)
+    data['Upfront Cost'] = round(data['Price'] - data['Loan Amount'], 2)
     home_finance.find_element_by_css_selector('input.form-control[name="interestRate"]').clear()
-    time.sleep(1)
+    time.sleep(2)
     home_finance.find_element_by_css_selector('input.form-control[name="interestRate"]').send_keys(str(INTERST_RATE))
     data['Interst Rate Applied'] = '{} %'.format(home_finance.find_element_by_css_selector('input.form-control[name="interestRate"]').get_attribute('value'))
     data['Monthly Mortgage (2%)'] = format_float_value(home_finance.find_element_by_class_name('home-finance-chart__card-context').find_elements_by_tag_name('div')[-1].text)
@@ -136,7 +142,7 @@ def get_details_from_listing_page(data):
 
     try:
         last_transctions = list(map(lambda x: x.text, driver.find_element_by_id('priceInsightLastTransactionTab').find_element_by_class_name('price_widget_transaction_tab_rent__body').find_element_by_class_name('price_widget_transaction_tab__body_right').find_element_by_class_name('active').find_elements_by_class_name('price_widget_transaction_tab__price')))
-        data['Avg Rental'] = get_avg_rental(last_transctions[: 10]) # based on recent 10 data
+        data['Avg Rental'] = get_avg_rental(last_transctions[: 10])  # based on recent 10 data
         data['Rental Yield'] = round((data['Avg Rental'] * 12) / data['Price'], 2)
     except:
         data['Avg Rental'] = 0.0
@@ -151,10 +157,13 @@ def get_details_from_listing_page(data):
 
 
 def get_listing_information(wb, URL, sheet_name, data):
+    if sheet_exists(wb, sheet_name):
+        return
+
     isRunning, driver = get_driver(URL)
     if not isRunning:
         return data
-    # print(driver.current_url)
+
     time.sleep(1)
     listing_div = driver.find_element_by_id('listings-container')
 
@@ -167,10 +176,18 @@ def get_listing_information(wb, URL, sheet_name, data):
             dic['Website'] = LISTING_URL.format(listing_id)
 
             data[listing_id] = get_details_from_listing_page(dic)
-        
+
     driver.quit()
     write_to_excel(wb, sheet_name, data)
-    return data
+
+
+def sheet_exists(wb, sheet_name):
+    try:
+        sheet = wb.get_sheet(sheet_name)
+        return True
+    except:
+        return False
+
 
 def add_or_get_sheet_by_name(wb, sheet_name, data):
     try:
@@ -183,6 +200,7 @@ def add_or_get_sheet_by_name(wb, sheet_name, data):
             break
         return ws
 
+
 def write_to_excel(wb, sheet_name, data):
     ws = add_or_get_sheet_by_name(wb, sheet_name, data)
 
@@ -193,23 +211,76 @@ def write_to_excel(wb, sheet_name, data):
         for value in listing_data.values():
             ws.write(row_counter, col_counter, value, STYLE_TWO)
             col_counter += 1
-        
+
         row_counter += 1
 
+    wb.save("Listings.xls")
+
+
 try:
-    wb = open_workbook("Listings.xls")
+    rb = open_workbook('Listings.xls', formatting_info=True)
+    wb = xl_copy(rb)
 except:
+    rb = None
     wb = Workbook(encoding='utf-8')
-    print("failed")
-ws = wb.add_sheet("2")
-wb.save()
-# thread_list = list()
-# for i in range(2, N+1): # 1 , N+1
-#     t = threading.Thread(name='Test {}'.format(i), target=get_listing_information(wb, URL.format(i), str(i), {}))
-#     t.start()
-#     thread_list.append(t)
 
-# for thread in thread_list:
-#     thread.join()
+thread_list = list()
+for i in range(1, N + 1):  # 1 , N+1
+    t = threading.Thread(name='Test {}'.format(i), target=get_listing_information(wb, URL.format(i), str(i), {}))
+    t.start()
+    thread_list.append(t)
 
-# wb.save("Listings.xls")
+for thread in thread_list:
+    thread.join()
+
+wb.save("Listings.xls")
+
+# d = pd.ExcelFile("Listings.xls")
+# all_dfs = pd.read_excel('Listings.xls', sheet_name=None)
+# df = pd.concat(all_dfs, ignore_index=True)
+
+# df.to_csv('Listings.csv', encoding='utf-8', index=False)
+# rows_affected = df.loc[df['Interst Rate Applied'] == '21.5 %']
+# print(len(rows_affected))
+# print(rows_affected)
+# print(listing_ids_affected[99])
+# cols_to_update = ['Interst Rate Applied', 'Monthly Mortgage (2%)', 'Monthly Mortgage', 'Monthly Principal', 'Monthly Interest', 'Cashflow', 'Profitable']
+# for index in rows_affected.index:
+#     website = df.iloc[index]['Website']
+
+#     isRunning, driver = get_driver(website)
+
+#     vals_to_update = []
+
+#     #get price
+#     home_finance = driver.find_element_by_class_name('home-finance-widget__container')
+#     driver.execute_script('arguments[0].scrollIntoView(true);', home_finance)
+
+#     home_finance.find_element_by_css_selector('input.form-control[name="interestRate"]').clear()
+#     time.sleep(3)
+#     home_finance.find_element_by_css_selector('input.form-control[name="interestRate"]').send_keys(str(INTERST_RATE))
+#     interst_rate_applied = '{} %'.format(home_finance.find_element_by_css_selector('input.form-control[name="interestRate"]').get_attribute('value'))
+#     vals_to_update.append(interst_rate_applied)
+#     old_monthly_mortgage = format_float_value(home_finance.find_element_by_class_name('home-finance-chart__card-context').find_elements_by_tag_name('div')[-1].text)
+#     vals_to_update.append(old_monthly_mortgage)
+#     home_finance.find_element_by_css_selector('button.btn.btn-default.home-finance-calc__btn').click()
+#     time.sleep(1)
+
+#     monthly_mortgage = format_float_value(home_finance.find_element_by_class_name('home-finance-chart__card-context').find_elements_by_tag_name('div')[-1].text)
+#     vals_to_update.append(monthly_mortgage)
+#     monthly_principle = format_float_value(home_finance.find_element_by_class_name('home-finance-chart__legend-container').find_element_by_class_name('home-finance-chart__legend').text)
+#     vals_to_update.append(monthly_principle)
+#     monthly_interest = format_float_value(home_finance.find_elements_by_class_name('home-finance-chart__legend-container')[1].find_element_by_class_name('home-finance-chart__legend').text)
+#     vals_to_update.append(monthly_interest)
+#     avg_rental = df.iloc[index]['Avg Rental']
+#     cashflow = avg_rental - monthly_mortgage
+#     vals_to_update.append(cashflow)
+#     profitable = True if cashflow > 0 else False
+#     vals_to_update.append(profitable)
+
+#     driver.quit()
+
+#     for i in range(len(cols_to_update)):
+#         df.at[index, cols_to_update[i]] = vals_to_update[i]
+
+# df.to_csv('Listings.csv', encoding='utf-8', index=False)
